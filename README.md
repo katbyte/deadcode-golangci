@@ -1,5 +1,6 @@
 # deadcode-golangci
 
+[![GitHub release](https://img.shields.io/github/v/release/katbyte/deadcode-golangci?color=blueviolet)](https://github.com/katbyte/deadcode-golangci/releases/latest)
 ![test](https://github.com/katbyte/deadcode-golangci/actions/workflows/test.yaml/badge.svg)
 ![lint](https://github.com/katbyte/deadcode-golangci/actions/workflows/lint.yaml/badge.svg)
 ![govulncheck](https://github.com/katbyte/deadcode-golangci/actions/workflows/govulncheck.yaml/badge.svg)
