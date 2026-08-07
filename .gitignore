@@ -1,0 +1,5 @@
+# scratch artifacts from building a custom golangci-lint locally or in CI
+.custom-gcl.yml
+custom-gcl
+
+.idea/
