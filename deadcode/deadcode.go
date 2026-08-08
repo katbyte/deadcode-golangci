@@ -44,8 +44,12 @@ is reported. Each report carries a suggested fix deleting the declaration.`
 type Config struct {
 	Dir       string   // directory to load the program from (default: current directory)
 	Patterns  []string // package patterns containing the program entry points (default: ["./..."])
-	Test      bool     // include implicit test packages and executables as entry points
-	RootFuncs string   // regex of function names treated as extra entry points (e.g. ^TestAcc); implies loading test packages, and functions declared in _test.go files are then exempt from reporting
+	Test bool // include implicit test packages and executables as entry points
+	// TreatFunctionsAsUsed is a regex of function names treated as used, i.e. as extra
+	// entry points: the matched functions and everything they transitively call are live
+	// (e.g. ^TestAcc). Implies loading test packages, and functions declared in _test.go
+	// files are then exempt from reporting.
+	TreatFunctionsAsUsed string
 	Tags      string   // comma-separated list of extra build tags (see: go help buildconstraint)
 	Generated bool     // report dead functions declared in generated Go files
 }
@@ -74,7 +78,7 @@ var Analyzer = func() *analysis.Analyzer {
 		return nil
 	})
 	a.Flags.BoolVar(&cfg.Test, "roots-test", false, "include implicit test packages and executables as entry points")
-	a.Flags.StringVar(&cfg.RootFuncs, "roots-funcs", "", "treat functions whose name matches this `regex` as extra entry points (e.g. ^TestAcc); implies loading test packages, and functions declared in _test.go files are not reported")
+	a.Flags.StringVar(&cfg.TreatFunctionsAsUsed, "treat-functions-as-used", "", "treat functions whose name matches this `regex` as used, i.e. as extra entry points (e.g. ^TestAcc); implies loading test packages, and functions declared in _test.go files are not reported")
 	a.Flags.StringVar(&cfg.Tags, "buildtags", "", "comma-separated list of extra build `tags` for the whole-program scan")
 	a.Flags.BoolVar(&cfg.Generated, "generated", false, "report dead functions declared in generated Go files")
 	return a
@@ -150,10 +154,10 @@ func (d *detector) scan() {
 	}
 
 	var rootFuncs *regexp.Regexp
-	if d.cfg.RootFuncs != "" {
-		re, err := regexp.Compile(d.cfg.RootFuncs)
+	if d.cfg.TreatFunctionsAsUsed != "" {
+		re, err := regexp.Compile(d.cfg.TreatFunctionsAsUsed)
 		if err != nil {
-			d.err = fmt.Errorf("invalid RootFuncs regex %q: %w", d.cfg.RootFuncs, err)
+			d.err = fmt.Errorf("invalid treat-functions-as-used regex %q: %w", d.cfg.TreatFunctionsAsUsed, err)
 			return
 		}
 		rootFuncs = re
@@ -188,10 +192,10 @@ func (d *detector) scan() {
 
 	mains := ssautil.MainPackages(pkgs)
 	if rootFuncs != nil && !d.cfg.Test {
-		// drop synthesised test binaries ("pkg.test" main packages): in RootFuncs mode only
-		// the explicitly matched test functions are roots, not the whole test harness -
-		// otherwise every test would count as an entry point and nothing test-reachable
-		// could ever be reported
+		// drop synthesised test binaries ("pkg.test" main packages): in
+		// treat-functions-as-used mode only the explicitly matched test functions are
+		// roots, not the whole test harness - otherwise every test would count as an
+		// entry point and nothing test-reachable could ever be reported
 		mains = slices.DeleteFunc(mains, func(m *ssa.Package) bool {
 			return strings.HasSuffix(m.Pkg.Path(), ".test")
 		})
@@ -269,7 +273,7 @@ func (d *detector) scan() {
 	}
 
 	if len(roots) == 0 {
-		d.err = fmt.Errorf("no entry points: no main packages match %v and no functions match RootFuncs %q", patterns, d.cfg.RootFuncs)
+		d.err = fmt.Errorf("no entry points: no main packages match %v and no functions match treat-functions-as-used %q", patterns, d.cfg.TreatFunctionsAsUsed)
 		return
 	}
 

@@ -104,10 +104,10 @@ func TestDeadcodeGenerated(t *testing.T) {
 	}
 }
 
-func TestRootFuncs(t *testing.T) {
+func TestTreatFunctionsAsUsed(t *testing.T) {
 	t.Parallel()
 
-	got, _ := collect(t, &deadcode.Config{RootFuncs: "^TestAcc"}, true)
+	got, _ := collect(t, &deadcode.Config{TreatFunctionsAsUsed: "^TestAcc"}, true)
 
 	// acceptanceHelper is live via the TestAccFixture_basic root; unitOnlyHelper stays dead
 	// because unit tests are not entry points; TestUnitHelper and deadTestHelper live in a
@@ -119,29 +119,29 @@ func TestRootFuncs(t *testing.T) {
 	}
 }
 
-func TestRootFuncsAndTest(t *testing.T) {
+func TestTreatFunctionsAsUsedAndTest(t *testing.T) {
 	t.Parallel()
 
-	// test: true alongside RootFuncs keeps the whole test harness as entry points, so
-	// even unit-test-only code is live
-	got, _ := collect(t, &deadcode.Config{RootFuncs: "^TestAcc", Test: true}, true)
+	// test: true alongside treat-functions-as-used keeps the whole test harness as entry
+	// points, so even unit-test-only code is live
+	got, _ := collect(t, &deadcode.Config{TreatFunctionsAsUsed: "^TestAcc", Test: true}, true)
 
 	if _, ok := got["unitOnlyHelper"]; ok {
 		t.Fatalf("test: true should keep unit-test-only code live, got %v", slices.Sorted(maps.Keys(got)))
 	}
 }
 
-func TestBadRootFuncsRegex(t *testing.T) {
+func TestBadTreatFunctionsAsUsedRegex(t *testing.T) {
 	t.Parallel()
 
 	dir, err := filepath.Abs(filepath.Join("testdata", "fixture"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := deadcode.NewAnalyzer(&deadcode.Config{Dir: dir, RootFuncs: "("})
+	a := deadcode.NewAnalyzer(&deadcode.Config{Dir: dir, TreatFunctionsAsUsed: "("})
 
 	pass := &analysis.Pass{Analyzer: a, Fset: token.NewFileSet(), Report: func(analysis.Diagnostic) {}}
-	if _, err := a.Run(pass); err == nil || !strings.Contains(err.Error(), "invalid RootFuncs regex") {
+	if _, err := a.Run(pass); err == nil || !strings.Contains(err.Error(), "invalid treat-functions-as-used regex") {
 		t.Fatalf("expected an invalid-regex error, got %v", err)
 	}
 }

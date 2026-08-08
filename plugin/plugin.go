@@ -18,17 +18,17 @@ func init() {
 // linters.settings.custom.deadcode.settings:
 //
 //	settings:
-//	  patterns: ["./..."]  # package patterns containing the program entry points
-//	  test: false          # include test packages and executables as entry points
-//	  root-funcs: ""       # regex of function names treated as extra entry points (e.g. ^TestAcc); implies loading test packages, and functions declared in _test.go files are then exempt from reporting
-//	  tags: ""             # extra build tags for the whole-program scan
-//	  generated: false     # report dead functions declared in generated Go files
+//	  patterns: ["./..."]          # package patterns containing the program entry points
+//	  test: false                  # include test packages and executables as entry points
+//	  treat-functions-as-used: ""  # regex of function names treated as used, i.e. extra entry points (e.g. ^TestAcc); implies loading test packages, and functions declared in _test.go files are then exempt from reporting
+//	  tags: ""                     # extra build tags for the whole-program scan
+//	  generated: false             # report dead functions declared in generated Go files
 type Settings struct {
-	Patterns  []string `json:"patterns"`
-	Test      bool     `json:"test"`
-	RootFuncs string   `json:"root-funcs"`
-	Tags      string   `json:"tags"`
-	Generated bool     `json:"generated"`
+	Patterns             []string `json:"patterns"`
+	Test                 bool     `json:"test"`
+	TreatFunctionsAsUsed string   `json:"treat-functions-as-used"`
+	Tags                 string   `json:"tags"`
+	Generated            bool     `json:"generated"`
 }
 
 func New(settings any) (register.LinterPlugin, error) {
@@ -47,11 +47,11 @@ type Plugin struct {
 func (p *Plugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 	return []*analysis.Analyzer{
 		deadcode.NewAnalyzer(&deadcode.Config{
-			Patterns:  p.settings.Patterns,
-			Test:      p.settings.Test,
-			RootFuncs: p.settings.RootFuncs,
-			Tags:      p.settings.Tags,
-			Generated: p.settings.Generated,
+			Patterns:             p.settings.Patterns,
+			Test:                 p.settings.Test,
+			TreatFunctionsAsUsed: p.settings.TreatFunctionsAsUsed,
+			Tags:                 p.settings.Tags,
+			Generated:            p.settings.Generated,
 		}),
 	}, nil
 }

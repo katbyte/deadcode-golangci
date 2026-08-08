@@ -56,7 +56,7 @@ Three things to know (a fix run also prints a reminder to stderr when it removes
 
 - **Removal cascades.** Deleting a dead function can make the functions only it called newly dead — the scan is a snapshot, so rerun until clean.
 - **Imports may be orphaned.** A deleted function's imports are not removed; run `goimports` (or let golangci-lint's `goimports` formatter fix it in the same run).
-- **Test files are never fixed.** With `root-funcs`, functions in `_test.go` files are exempt from reporting, so a unit test exercising a removed function survives and breaks `go test` — delete such tests together with their function (`go build ./...` stays green either way).
+- **Test files are never fixed.** With `treat-functions-as-used`, functions in `_test.go` files are exempt from reporting, so a unit test exercising a removed function survives and breaks `go test` — delete such tests together with their function (`go build ./...` stays green either way).
 
 ## Settings
 
@@ -69,7 +69,7 @@ linters:
         settings:
           patterns: ["./..."]  # package patterns containing the program entry points
           test: false          # include test packages and executables as entry points
-          root-funcs: ""       # regex of function names treated as extra entry points (e.g. ^TestAcc)
+          treat-functions-as-used: ""  # regex of function names treated as used, i.e. extra entry points (e.g. ^TestAcc)
           tags: ""             # extra build tags for the whole-program scan
           generated: false     # report dead functions declared in generated Go files
 ```
@@ -78,7 +78,7 @@ linters:
 
 `test`, `tags` and `generated` correspond to `cmd/deadcode`'s `-test`, `-tags` and `-generated` flags. Upstream's `-filter` is unnecessary here: reports are inherently limited to the packages golangci-lint is linting.
 
-`root-funcs` treats functions whose name matches a regex as extra entry points (e.g. `^TestAcc` for terraform provider acceptance tests). Test packages are loaded, but unlike `test: true` the test harness itself is not a root: production code kept alive only by its own unit tests is still reported dead, while everything the matched functions call stays live. In this mode functions declared in `_test.go` files are exempt from reporting — they are roots or harness scaffolding for `go test`, not dead code.
+`treat-functions-as-used` treats functions whose name matches a regex as used — note this makes them *entry points*, not a suppression list: the matched functions and everything they transitively call become live (e.g. `^TestAcc` for terraform provider acceptance tests). Test packages are loaded, but unlike `test: true` the test harness itself is not a root: production code kept alive only by its own unit tests is still reported dead. In this mode functions declared in `_test.go` files are exempt from reporting — they are roots or harness scaffolding for `go test`, not dead code.
 
 ## Standalone Binary
 
@@ -89,7 +89,7 @@ go install github.com/katbyte/deadcode-golangci@latest
 deadcode-golangci -fix ./...
 ```
 
-Its analyzer flags are `-patterns`, `-roots-test`, `-roots-funcs`, `-buildtags` and `-generated` (`-test` and `-tags` are taken by the analysis driver itself, whose flags apply to the driver's own package load, not the whole-program scan).
+Its analyzer flags are `-patterns`, `-roots-test`, `-treat-functions-as-used`, `-buildtags` and `-generated` (`-test` and `-tags` are taken by the analysis driver itself, whose flags apply to the driver's own package load, not the whole-program scan).
 
 ## Caveats
 
