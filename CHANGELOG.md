@@ -1,4 +1,4 @@
-## v0.1.0 (unreleased)
+## v0.1.0 (2026-08-07)
 
 - initial release: golangci-lint module plugin wrapping `golang.org/x/tools/cmd/deadcode`'s whole-program RTA dead code detection
 - suggested fixes deleting dead declarations (doc comments included), so `golangci-lint run --fix` removes them
