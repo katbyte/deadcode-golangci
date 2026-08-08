@@ -9,7 +9,7 @@ import (
 func TestBuildAnalyzers(t *testing.T) {
 	t.Parallel()
 
-	p, err := New(map[string]any{"patterns": []string{"./cmd/..."}, "test": true, "tags": "integration", "generated": true})
+	p, err := New(map[string]any{"patterns": []string{"./cmd/..."}, "test": true, "root-funcs": "^TestAcc", "tags": "integration", "generated": true})
 	if err != nil {
 		t.Fatal(err)
 	}

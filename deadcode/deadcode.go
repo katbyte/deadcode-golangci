@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"go/ast"
 	"go/types"
+	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -43,6 +45,7 @@ type Config struct {
 	Dir       string   // directory to load the program from (default: current directory)
 	Patterns  []string // package patterns containing the program entry points (default: ["./..."])
 	Test      bool     // include implicit test packages and executables as entry points
+	RootFuncs string   // regex of function names treated as extra entry points (e.g. ^TestAcc); implies loading test packages, and functions declared in _test.go files are then exempt from reporting
 	Tags      string   // comma-separated list of extra build tags (see: go help buildconstraint)
 	Generated bool     // report dead functions declared in generated Go files
 }
@@ -71,6 +74,7 @@ var Analyzer = func() *analysis.Analyzer {
 		return nil
 	})
 	a.Flags.BoolVar(&cfg.Test, "roots-test", false, "include implicit test packages and executables as entry points")
+	a.Flags.StringVar(&cfg.RootFuncs, "roots-funcs", "", "treat functions whose name matches this `regex` as extra entry points (e.g. ^TestAcc); implies loading test packages, and functions declared in _test.go files are not reported")
 	a.Flags.StringVar(&cfg.Tags, "buildtags", "", "comma-separated list of extra build `tags` for the whole-program scan")
 	a.Flags.BoolVar(&cfg.Generated, "generated", false, "report dead functions declared in generated Go files")
 	return a
@@ -145,9 +149,19 @@ func (d *detector) scan() {
 		patterns = []string{"./..."}
 	}
 
+	var rootFuncs *regexp.Regexp
+	if d.cfg.RootFuncs != "" {
+		re, err := regexp.Compile(d.cfg.RootFuncs)
+		if err != nil {
+			d.err = fmt.Errorf("invalid RootFuncs regex %q: %w", d.cfg.RootFuncs, err)
+			return
+		}
+		rootFuncs = re
+	}
+
 	cfg := &packages.Config{
 		Mode:  packages.LoadAllSyntax | packages.NeedModule,
-		Tests: d.cfg.Test,
+		Tests: d.cfg.Test || rootFuncs != nil,
 		Dir:   d.cfg.Dir,
 	}
 	if d.cfg.Tags != "" {
@@ -173,7 +187,16 @@ func (d *detector) scan() {
 	prog.Build()
 
 	mains := ssautil.MainPackages(pkgs)
-	if len(mains) == 0 {
+	if rootFuncs != nil && !d.cfg.Test {
+		// drop synthesised test binaries ("pkg.test" main packages): in RootFuncs mode only
+		// the explicitly matched test functions are roots, not the whole test harness -
+		// otherwise every test would count as an entry point and nothing test-reachable
+		// could ever be reported
+		mains = slices.DeleteFunc(mains, func(m *ssa.Package) bool {
+			return strings.HasSuffix(m.Pkg.Path(), ".test")
+		})
+	}
+	if len(mains) == 0 && rootFuncs == nil {
 		d.err = fmt.Errorf("no main packages match %v: deadcode needs program entry points; point patterns at a module containing a main package, or set test: true to use test executables as entry points", patterns)
 		return
 	}
@@ -211,22 +234,43 @@ func (d *detector) scan() {
 		interfaceTypes[p.Types] = interfaces
 
 		for _, file := range p.Syntax {
+			inTestFile := strings.HasSuffix(p.Fset.File(file.Pos()).Name(), "_test.go")
 			for _, decl := range file.Decls {
-				if decl, ok := decl.(*ast.FuncDecl); ok {
-					obj, ok := p.TypesInfo.Defs[decl.Name].(*types.Func)
-					if !ok {
+				fnDecl, ok := decl.(*ast.FuncDecl)
+				if !ok {
+					continue
+				}
+				obj, ok := p.TypesInfo.Defs[fnDecl.Name].(*types.Func)
+				if !ok {
+					continue
+				}
+				fn := prog.FuncValue(obj)
+				if fn == nil {
+					continue
+				}
+				if rootFuncs != nil {
+					if rootFuncs.MatchString(fnDecl.Name.Name) {
+						roots = append(roots, fn)
+					}
+					// functions declared in test files are go test's to invoke (unit
+					// tests, benchmarks, their helpers) - they are roots or harness
+					// scaffolding, never reportable dead code
+					if inTestFile {
 						continue
 					}
-					if fn := prog.FuncValue(obj); fn != nil {
-						sourceFuncs = append(sourceFuncs, srcFunc{fn, decl, p.Types})
-					}
 				}
+				sourceFuncs = append(sourceFuncs, srcFunc{fn, fnDecl, p.Types})
 			}
 
 			if ast.IsGenerated(file) {
 				generated[p.Fset.File(file.Pos()).Name()] = true
 			}
 		}
+	}
+
+	if len(roots) == 0 {
+		d.err = fmt.Errorf("no entry points: no main packages match %v and no functions match RootFuncs %q", patterns, d.cfg.RootFuncs)
+		return
 	}
 
 	res := rta.Analyze(roots, false)
@@ -259,6 +303,18 @@ func (d *detector) scan() {
 		}
 
 		d.dead[key] = prettyName(sf.fn)
+	}
+
+	// warn fix runs that one pass is not enough: the scan is a snapshot, and deleting a
+	// dead function can make the functions only it called newly dead. There is no
+	// analyzer API to know fixes will be applied (the driver does that afterwards), so
+	// sniff the command line (golangci-lint run --fix / standalone -fix).
+	if len(d.dead) > 0 && slices.ContainsFunc(os.Args[1:], func(arg string) bool {
+		return arg == "--fix" || arg == "-fix" || arg == "--fix=true" || arg == "-fix=true"
+	}) {
+		fmt.Fprintf(os.Stderr,
+			"deadcode: removing %d unreachable functions - removals cascade (deleting a function can make its callees newly dead), so rerun the fix until it reports nothing, then delete any test files still referencing removed functions\n",
+			len(d.dead))
 	}
 }
 

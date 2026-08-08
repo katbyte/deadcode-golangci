@@ -18,7 +18,7 @@ import (
 // collect runs the analyzer over every package of the testdata fixture module,
 // driving the per-package passes by hand (the analyzer only needs Files, Fset and
 // Report), and returns the reported diagnostics keyed by dead function name.
-func collect(t *testing.T, cfg *deadcode.Config) (map[string]analysis.Diagnostic, *token.FileSet) {
+func collect(t *testing.T, cfg *deadcode.Config, loadTests bool) (map[string]analysis.Diagnostic, *token.FileSet) {
 	t.Helper()
 
 	dir, err := filepath.Abs(filepath.Join("testdata", "fixture"))
@@ -29,8 +29,9 @@ func collect(t *testing.T, cfg *deadcode.Config) (map[string]analysis.Diagnostic
 	a := deadcode.NewAnalyzer(cfg)
 
 	pkgs, err := packages.Load(&packages.Config{
-		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles | packages.NeedSyntax,
-		Dir:  dir,
+		Mode:  packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles | packages.NeedSyntax,
+		Dir:   dir,
+		Tests: loadTests,
 	}, "./...")
 	if err != nil {
 		t.Fatal(err)
@@ -62,9 +63,9 @@ func collect(t *testing.T, cfg *deadcode.Config) (map[string]analysis.Diagnostic
 func TestDeadcode(t *testing.T) {
 	t.Parallel()
 
-	got, fset := collect(t, &deadcode.Config{})
+	got, fset := collect(t, &deadcode.Config{}, false)
 
-	want := []string{"Unused", "deadChainA", "deadChainB", "unusedTopLevel", "widget.deadMethod"}
+	want := []string{"Unused", "acceptanceHelper", "deadChainA", "deadChainB", "unitOnlyHelper", "unusedTopLevel", "widget.deadMethod"}
 	names := slices.Sorted(maps.Keys(got))
 	if !slices.Equal(names, want) {
 		t.Fatalf("dead functions = %v, want %v", names, want)
@@ -96,10 +97,52 @@ func TestDeadcode(t *testing.T) {
 func TestDeadcodeGenerated(t *testing.T) {
 	t.Parallel()
 
-	got, _ := collect(t, &deadcode.Config{Generated: true})
+	got, _ := collect(t, &deadcode.Config{Generated: true}, false)
 
 	if _, ok := got["genDead"]; !ok {
 		t.Fatalf("generated: true should report dead functions in generated files, got %v", slices.Sorted(maps.Keys(got)))
+	}
+}
+
+func TestRootFuncs(t *testing.T) {
+	t.Parallel()
+
+	got, _ := collect(t, &deadcode.Config{RootFuncs: "^TestAcc"}, true)
+
+	// acceptanceHelper is live via the TestAccFixture_basic root; unitOnlyHelper stays dead
+	// because unit tests are not entry points; TestUnitHelper and deadTestHelper live in a
+	// _test.go file and are exempt from reporting
+	want := []string{"Unused", "deadChainA", "deadChainB", "unitOnlyHelper", "unusedTopLevel", "widget.deadMethod"}
+	names := slices.Sorted(maps.Keys(got))
+	if !slices.Equal(names, want) {
+		t.Fatalf("dead functions = %v, want %v", names, want)
+	}
+}
+
+func TestRootFuncsAndTest(t *testing.T) {
+	t.Parallel()
+
+	// test: true alongside RootFuncs keeps the whole test harness as entry points, so
+	// even unit-test-only code is live
+	got, _ := collect(t, &deadcode.Config{RootFuncs: "^TestAcc", Test: true}, true)
+
+	if _, ok := got["unitOnlyHelper"]; ok {
+		t.Fatalf("test: true should keep unit-test-only code live, got %v", slices.Sorted(maps.Keys(got)))
+	}
+}
+
+func TestBadRootFuncsRegex(t *testing.T) {
+	t.Parallel()
+
+	dir, err := filepath.Abs(filepath.Join("testdata", "fixture"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := deadcode.NewAnalyzer(&deadcode.Config{Dir: dir, RootFuncs: "("})
+
+	pass := &analysis.Pass{Analyzer: a, Fset: token.NewFileSet(), Report: func(analysis.Diagnostic) {}}
+	if _, err := a.Run(pass); err == nil || !strings.Contains(err.Error(), "invalid RootFuncs regex") {
+		t.Fatalf("expected an invalid-regex error, got %v", err)
 	}
 }
 

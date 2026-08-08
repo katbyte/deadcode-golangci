@@ -20,11 +20,13 @@ func init() {
 //	settings:
 //	  patterns: ["./..."]  # package patterns containing the program entry points
 //	  test: false          # include test packages and executables as entry points
+//	  root-funcs: ""       # regex of function names treated as extra entry points (e.g. ^TestAcc); implies loading test packages, and functions declared in _test.go files are then exempt from reporting
 //	  tags: ""             # extra build tags for the whole-program scan
 //	  generated: false     # report dead functions declared in generated Go files
 type Settings struct {
 	Patterns  []string `json:"patterns"`
 	Test      bool     `json:"test"`
+	RootFuncs string   `json:"root-funcs"`
 	Tags      string   `json:"tags"`
 	Generated bool     `json:"generated"`
 }
@@ -47,6 +49,7 @@ func (p *Plugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 		deadcode.NewAnalyzer(&deadcode.Config{
 			Patterns:  p.settings.Patterns,
 			Test:      p.settings.Test,
+			RootFuncs: p.settings.RootFuncs,
 			Tags:      p.settings.Tags,
 			Generated: p.settings.Generated,
 		}),

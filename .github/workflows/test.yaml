@@ -55,9 +55,9 @@ jobs:
           EOF
           GCL="$PWD/custom-gcl"
           cd /tmp/fixture
-          # expect exactly the 5 known-dead functions
+          # expect exactly the 7 known-dead functions
           "$GCL" run ./... > report.txt || true
-          grep -c 'unreachable func' report.txt | grep -qx 5
+          grep -c 'unreachable func' report.txt | grep -qx 7
           # --fix must remove them all and leave a compiling program
           "$GCL" run --fix ./...
           go build ./...
