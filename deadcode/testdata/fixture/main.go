@@ -43,3 +43,13 @@ type marker interface{ isMarker() }
 
 // isMarker is a marker method: dead, but deliberately not reported.
 func (thing) isMarker() {}
+
+type quacker interface{ quack() }
+
+type duck struct{}
+
+// quack is referenced only by the interface-satisfaction assertion below; the assertion
+// declares intent, so quack is kept live (deleting it would break the assertion).
+func (duck) quack() {}
+
+var _ quacker = duck{}

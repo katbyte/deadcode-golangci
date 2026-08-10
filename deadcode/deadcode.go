@@ -18,6 +18,7 @@ package deadcode
 import (
 	"fmt"
 	"go/ast"
+	"go/token"
 	"go/types"
 	"os"
 	"regexp"
@@ -42,16 +43,16 @@ is reported. Each report carries a suggested fix deleting the declaration.`
 // Config configures the whole-program scan; the zero value scans "./..." from
 // the current directory, matching how golangci-lint is normally invoked.
 type Config struct {
-	Dir       string   // directory to load the program from (default: current directory)
-	Patterns  []string // package patterns containing the program entry points (default: ["./..."])
-	Test bool // include implicit test packages and executables as entry points
+	Dir      string   // directory to load the program from (default: current directory)
+	Patterns []string // package patterns containing the program entry points (default: ["./..."])
+	Test     bool     // include implicit test packages and executables as entry points
 	// TreatFunctionsAsUsed is a regex of function names treated as used, i.e. as extra
 	// entry points: the matched functions and everything they transitively call are live
 	// (e.g. ^TestAcc). Implies loading test packages, and functions declared in _test.go
 	// files are then exempt from reporting.
 	TreatFunctionsAsUsed string
-	Tags      string   // comma-separated list of extra build tags (see: go help buildconstraint)
-	Generated bool     // report dead functions declared in generated Go files
+	Tags                 string // comma-separated list of extra build tags (see: go help buildconstraint)
+	Generated            bool   // report dead functions declared in generated Go files
 }
 
 // NewAnalyzer returns a deadcode analyzer whose whole-program scan uses cfg.
@@ -66,8 +67,8 @@ func NewAnalyzer(cfg *Config) *analysis.Analyzer {
 	}
 }
 
-// Analyzer is a ready-made instance for standalone drivers (e.g. singlechecker),
-// configured via -patterns, -roots-test, -buildtags and -generated flags.
+// Analyzer is a ready-made instance for standalone drivers (e.g. singlechecker), configured
+// via -patterns, -roots-test, -treat-functions-as-used, -buildtags and -generated flags.
 // (-test and -tags are taken by the analysis driver itself, whose flags apply to
 // the driver's own package load, not this analyzer's whole-program scan.)
 var Analyzer = func() *analysis.Analyzer {
@@ -111,6 +112,31 @@ func (d *detector) run(pass *analysis.Pass) (any, error) {
 	}
 
 	for _, file := range pass.Files {
+		// a file whose declarations were all removed cannot be deleted by a suggested
+		// fix, so report the husk (comments + package clause) rather than leave it to
+		// linger silently. Package documentation files (a doc comment on the package
+		// clause) and side-effect imports are deliberate and stay quiet.
+		if len(file.Decls) == 0 && file.Doc == nil {
+			directives, generated := fileMarkers(pass.Fset.Position(file.Package).Filename)
+			switch {
+			case directives:
+				// holds //go:generate directives: no declarations by design
+			case generated:
+				pass.Report(analysis.Diagnostic{
+					Pos:     file.Name.Pos(),
+					End:     file.Name.End(),
+					Message: "generated file has no declarations left - remove it at the source, by deleting the //go:generate directive that produces it, or the next 'go generate' brings it back",
+				})
+			default:
+				pass.Report(analysis.Diagnostic{
+					Pos:     file.Name.Pos(),
+					End:     file.Name.End(),
+					Message: "file contains no declarations - remove it (deadcode fixes cannot delete files)",
+				})
+			}
+			continue
+		}
+
 		for _, decl := range file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok {
@@ -224,7 +250,7 @@ func (d *detector) scan() {
 		generated      = make(map[string]bool)
 		interfaceTypes = make(map[*types.Package][]*types.Interface)
 	)
-	for _, p := range initial {
+	for i, p := range initial {
 		// collect the package's named interface types for marker method identification
 		var interfaces []*types.Interface
 		scope := p.Types.Scope()
@@ -237,9 +263,48 @@ func (d *detector) scan() {
 		}
 		interfaceTypes[p.Types] = interfaces
 
+		pkgRooted := false
 		for _, file := range p.Syntax {
 			inTestFile := strings.HasSuffix(p.Fset.File(file.Pos()).Name(), "_test.go")
 			for _, decl := range file.Decls {
+				// package-level interface-satisfaction assertions (`var _ I = T{}`)
+				// compile-check that T implements I, but SSA elides blank assignments so
+				// RTA never sees the conversion; honour the declared intent by rooting
+				// T's method set, else --fix deletes methods the assertion references
+				// and the package no longer compiles
+				if genDecl, ok := decl.(*ast.GenDecl); ok {
+					if genDecl.Tok != token.VAR {
+						continue
+					}
+					for _, spec := range genDecl.Specs {
+						vs, ok := spec.(*ast.ValueSpec)
+						if !ok || vs.Type == nil {
+							continue
+						}
+						ifaceType := p.TypesInfo.TypeOf(vs.Type)
+						if ifaceType == nil || !types.IsInterface(ifaceType) {
+							continue
+						}
+						for vi, name := range vs.Names {
+							if name.Name != "_" || vi >= len(vs.Values) {
+								continue
+							}
+							concrete := p.TypesInfo.TypeOf(vs.Values[vi])
+							if concrete == nil || types.IsInterface(concrete) {
+								continue
+							}
+							for method := range types.NewMethodSet(concrete).Methods() {
+								if f, ok := method.Obj().(*types.Func); ok {
+									if mfn := prog.FuncValue(f); mfn != nil {
+										roots = append(roots, mfn)
+									}
+								}
+							}
+						}
+					}
+					continue
+				}
+
 				fnDecl, ok := decl.(*ast.FuncDecl)
 				if !ok {
 					continue
@@ -255,6 +320,7 @@ func (d *detector) scan() {
 				if rootFuncs != nil {
 					if rootFuncs.MatchString(fnDecl.Name.Name) {
 						roots = append(roots, fn)
+						pkgRooted = true
 					}
 					// functions declared in test files are go test's to invoke (unit
 					// tests, benchmarks, their helpers) - they are roots or harness
@@ -268,6 +334,15 @@ func (d *detector) scan() {
 
 			if ast.IsGenerated(file) {
 				generated[p.Fset.File(file.Pos()).Name()] = true
+			}
+		}
+
+		// a rooted function implies its package was initialised, so root the package's
+		// synthetic initialiser too (which transitively runs every imported package's
+		// inits) - otherwise init-only code like test environment setup is falsely dead
+		if pkgRooted && pkgs[i] != nil {
+			if pkgInit := pkgs[i].Func("init"); pkgInit != nil {
+				roots = append(roots, pkgInit)
 			}
 		}
 	}
@@ -320,6 +395,35 @@ func (d *detector) scan() {
 			"deadcode: removing %d unreachable functions - removals cascade (deleting a function can make its callees newly dead), so rerun the fix until it reports nothing, then delete any test files still referencing removed functions\n",
 			len(d.dead))
 	}
+}
+
+// generatedComment matches the header marking a file as generated: the canonical
+// "Code generated ... DO NOT EDIT." form and the looser "generated by/via" phrasings
+// projects use instead.
+var generatedComment = regexp.MustCompile(`(?i)code generated .* do not edit|generated (by|via) `)
+
+// fileMarkers classifies a declaration-less file by its comments: whether it holds
+// //go:generate directives (such files, e.g. terraform-provider-azurerm's resourceids.go,
+// have no declarations by design) and whether it was itself generated (deleting it means
+// removing the directive that produces it too). Comments are read from the source rather
+// than the AST because golangci-lint hands analyzers comment-free files; this only runs
+// for files with no declarations, so the read is rare.
+func fileMarkers(filename string) (directives, generated bool) {
+	src, err := os.ReadFile(filename) //nolint:gosec // the path comes from the driver's FileSet, not user input
+	if err != nil {
+		return false, false
+	}
+	for line := range strings.Lines(string(src)) {
+		if !strings.HasPrefix(line, "//") {
+			continue
+		}
+		if strings.HasPrefix(line, "//go:generate") {
+			directives = true
+		} else if generatedComment.MatchString(line) {
+			generated = true
+		}
+	}
+	return directives, generated
 }
 
 // prettyName reduces go/ssa's fussy punctuation as cmd/deadcode does,

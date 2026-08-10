@@ -2,6 +2,8 @@ package main
 
 import "testing"
 
+func init() { initOnlyHelper() }
+
 func TestAccFixture_basic(t *testing.T) { acceptanceHelper() }
 
 func TestUnitHelper(t *testing.T) { unitOnlyHelper() }

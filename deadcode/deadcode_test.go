@@ -48,7 +48,8 @@ func collect(t *testing.T, cfg *deadcode.Config, loadTests bool) (map[string]ana
 			Report: func(d analysis.Diagnostic) {
 				name, ok := strings.CutPrefix(d.Message, "unreachable func: ")
 				if !ok {
-					t.Fatalf("unexpected message format: %q", d.Message)
+					// file-level reports (husks) key by file name
+					name = filepath.Base(p.Fset.Position(d.Pos).Filename)
 				}
 				got[name] = d
 			},
@@ -65,14 +66,23 @@ func TestDeadcode(t *testing.T) {
 
 	got, fset := collect(t, &deadcode.Config{}, false)
 
-	want := []string{"Unused", "acceptanceHelper", "deadChainA", "deadChainB", "unitOnlyHelper", "unusedTopLevel", "widget.deadMethod"}
+	// husk.go and generated_husk.go have no declarations; directives.go holds a
+	// generate directive, so it is not reported
+	want := []string{"Unused", "acceptanceHelper", "deadChainA", "deadChainB", "generated_husk.go", "husk.go", "initOnlyHelper", "unitOnlyHelper", "unusedTopLevel", "widget.deadMethod"}
 	names := slices.Sorted(maps.Keys(got))
 	if !slices.Equal(names, want) {
 		t.Fatalf("dead functions = %v, want %v", names, want)
 	}
 
-	// every report carries exactly one fix with one edit deleting the declaration
+	// every unreachable-func report carries exactly one fix with one edit deleting the
+	// declaration; the husk-file report is unfixable by design and carries none
 	for name, d := range got {
+		if !strings.HasPrefix(d.Message, "unreachable func: ") {
+			if len(d.SuggestedFixes) != 0 {
+				t.Fatalf("%s: expected no fix on a non-function report, got %+v", name, d.SuggestedFixes)
+			}
+			continue
+		}
 		if len(d.SuggestedFixes) != 1 || len(d.SuggestedFixes[0].TextEdits) != 1 {
 			t.Fatalf("%s: expected exactly one fix with one edit, got %+v", name, d.SuggestedFixes)
 		}
@@ -109,10 +119,11 @@ func TestTreatFunctionsAsUsed(t *testing.T) {
 
 	got, _ := collect(t, &deadcode.Config{TreatFunctionsAsUsed: "^TestAcc"}, true)
 
-	// acceptanceHelper is live via the TestAccFixture_basic root; unitOnlyHelper stays dead
-	// because unit tests are not entry points; TestUnitHelper and deadTestHelper live in a
-	// _test.go file and are exempt from reporting
-	want := []string{"Unused", "deadChainA", "deadChainB", "unitOnlyHelper", "unusedTopLevel", "widget.deadMethod"}
+	// acceptanceHelper is live via the TestAccFixture_basic root, and initOnlyHelper via
+	// the rooted package's initialiser; unitOnlyHelper stays dead because unit tests are
+	// not entry points; TestUnitHelper and deadTestHelper live in a _test.go file and are
+	// exempt from reporting
+	want := []string{"Unused", "deadChainA", "deadChainB", "generated_husk.go", "husk.go", "unitOnlyHelper", "unusedTopLevel", "widget.deadMethod"}
 	names := slices.Sorted(maps.Keys(got))
 	if !slices.Equal(names, want) {
 		t.Fatalf("dead functions = %v, want %v", names, want)

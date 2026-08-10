@@ -57,6 +57,7 @@ Three things to know (a fix run also prints a reminder to stderr when it removes
 - **Removal cascades.** Deleting a dead function can make the functions only it called newly dead — the scan is a snapshot, so rerun until clean.
 - **Imports may be orphaned.** A deleted function's imports are not removed; run `goimports` (or let golangci-lint's `goimports` formatter fix it in the same run).
 - **Test files are never fixed.** With `treat-functions-as-used`, functions in `_test.go` files are exempt from reporting, so a unit test exercising a removed function survives and breaks `go test` — delete such tests together with their function (`go build ./...` stays green either way).
+- **Files are never deleted.** Fixes cannot remove files, so removing a file's last function leaves a husk (comments + package clause). Husks are reported as findings until deleted by hand. A husk that was itself generated gets a distinct report: delete it at the source by removing the `//go:generate` directive that produces it, or the next `go generate` brings it back. Package documentation files (doc comment on the package clause) and files holding `//go:generate` directives (which have no declarations by design) are exempt.
 
 ## Settings
 
