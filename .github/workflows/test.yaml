@@ -55,10 +55,9 @@ jobs:
           EOF
           GCL="$PWD/custom-gcl"
           cd /tmp/fixture
-          # expect exactly the 8 known-dead functions
+          # expect exactly the 10 known-dead functions
           "$GCL" run ./... > report.txt || true
-          grep -c 'unreachable func' report.txt | grep -qx 8
-          # --fix must remove them all and leave a compiling program (the husk-file
-          # report is unfixable by design, so the fix run still exits non-zero)
+          grep -c 'unreachable func' report.txt | grep -qx 10
+          # --fix must remove them all and leave a compiling program
           "$GCL" run --fix ./... || true
           go build ./...
