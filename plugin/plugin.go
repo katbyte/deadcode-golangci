@@ -23,12 +23,14 @@ func init() {
 //	  treat-functions-as-used: ""  # regex of function names treated as used, i.e. extra entry points (e.g. ^TestAcc); implies loading test packages, and functions declared in _test.go files are then exempt from reporting
 //	  tags: ""                     # extra build tags for the whole-program scan
 //	  generated: false             # report dead functions declared in generated Go files
+//	  empty-files: false           # report files containing no declarations (dead code that --fix cannot delete)
 type Settings struct {
 	Patterns             []string `json:"patterns"`
 	Test                 bool     `json:"test"`
 	TreatFunctionsAsUsed string   `json:"treat-functions-as-used"`
 	Tags                 string   `json:"tags"`
 	Generated            bool     `json:"generated"`
+	EmptyFiles           bool     `json:"empty-files"`
 }
 
 func New(settings any) (register.LinterPlugin, error) {
@@ -52,6 +54,7 @@ func (p *Plugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
 			TreatFunctionsAsUsed: p.settings.TreatFunctionsAsUsed,
 			Tags:                 p.settings.Tags,
 			Generated:            p.settings.Generated,
+			EmptyFiles:           p.settings.EmptyFiles,
 		}),
 	}, nil
 }

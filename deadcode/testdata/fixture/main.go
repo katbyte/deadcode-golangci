@@ -44,12 +44,25 @@ type marker interface{ isMarker() }
 // isMarker is a marker method: dead, but deliberately not reported.
 func (thing) isMarker() {}
 
-type quacker interface{ quack() }
+type meower interface{ meow() }
 
-type duck struct{}
+type cat struct{}
 
-// quack is referenced only by the interface-satisfaction assertion below; the assertion
-// declares intent, so quack is kept live (deleting it would break the assertion).
-func (duck) quack() {}
+// meow is referenced only by the interface-satisfaction assertion below; the assertion
+// declares intent, so meow is kept live (deleting it would break the assertion).
+func (cat) meow() {}
 
-var _ quacker = duck{}
+// purr is dead: the meower assertion only requires meow, so cat's other
+// methods stay reportable (deleting purr cannot break the assertion). It has a
+// body so the marker-method exemption does not apply.
+func (cat) purr() { println("purr") }
+
+var _ meower = cat{}
+
+type gadget struct{}
+
+// deadHelper is dead: the any assertion below requires no methods at all, so it
+// roots nothing.
+func (gadget) deadHelper() {}
+
+var _ any = gadget{}

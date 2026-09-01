@@ -64,11 +64,13 @@ func collect(t *testing.T, cfg *deadcode.Config, loadTests bool) (map[string]ana
 func TestDeadcode(t *testing.T) {
 	t.Parallel()
 
-	got, fset := collect(t, &deadcode.Config{}, false)
+	got, fset := collect(t, &deadcode.Config{EmptyFiles: true}, false)
 
-	// husk.go and generated_husk.go have no declarations; directives.go holds a
-	// generate directive, so it is not reported
-	want := []string{"Unused", "acceptanceHelper", "deadChainA", "deadChainB", "generated_husk.go", "husk.go", "initOnlyHelper", "unitOnlyHelper", "unusedTopLevel", "widget.deadMethod"}
+	// husk.go and generated_husk.go have no declarations, reported via empty-files:
+	// true; directives.go holds a generate directive, so it is not reported. cat.purr
+	// and gadget.deadHelper are reported despite their types' interface-satisfaction
+	// assertions: only the methods an assertion's interface requires are rooted
+	want := []string{"Unused", "acceptanceHelper", "cat.purr", "deadChainA", "deadChainB", "gadget.deadHelper", "generated_husk.go", "husk.go", "initOnlyHelper", "unitOnlyHelper", "unusedTopLevel", "widget.deadMethod"}
 	names := slices.Sorted(maps.Keys(got))
 	if !slices.Equal(names, want) {
 		t.Fatalf("dead functions = %v, want %v", names, want)
@@ -122,8 +124,9 @@ func TestTreatFunctionsAsUsed(t *testing.T) {
 	// acceptanceHelper is live via the TestAccFixture_basic root, and initOnlyHelper via
 	// the rooted package's initialiser; unitOnlyHelper stays dead because unit tests are
 	// not entry points; TestUnitHelper and deadTestHelper live in a _test.go file and are
-	// exempt from reporting
-	want := []string{"Unused", "deadChainA", "deadChainB", "generated_husk.go", "husk.go", "unitOnlyHelper", "unusedTopLevel", "widget.deadMethod"}
+	// exempt from reporting. husk.go and generated_husk.go are absent: empty files are
+	// only reported with empty-files: true
+	want := []string{"Unused", "cat.purr", "deadChainA", "deadChainB", "gadget.deadHelper", "unitOnlyHelper", "unusedTopLevel", "widget.deadMethod"}
 	names := slices.Sorted(maps.Keys(got))
 	if !slices.Equal(names, want) {
 		t.Fatalf("dead functions = %v, want %v", names, want)

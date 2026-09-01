@@ -57,7 +57,7 @@ Three things to know (a fix run also prints a reminder to stderr when it removes
 - **Removal cascades.** Deleting a dead function can make the functions only it called newly dead — the scan is a snapshot, so rerun until clean.
 - **Imports may be orphaned.** A deleted function's imports are not removed; run `goimports` (or let golangci-lint's `goimports` formatter fix it in the same run).
 - **Test files are never fixed.** With `treat-functions-as-used`, functions in `_test.go` files are exempt from reporting, so a unit test exercising a removed function survives and breaks `go test` — delete such tests together with their function (`go build ./...` stays green either way).
-- **Files are never deleted.** Fixes cannot remove files, so removing a file's last function leaves a husk (comments + package clause). Husks are reported as findings until deleted by hand. A husk that was itself generated gets a distinct report: delete it at the source by removing the `//go:generate` directive that produces it, or the next `go generate` brings it back. Package documentation files (doc comment on the package clause) and files holding `//go:generate` directives (which have no declarations by design) are exempt.
+- **Empty files are dead code.** With `empty-files: true`, a file with no declarations is reported until deleted by hand — whether it was checked in empty or is the husk (comments + package clause) left behind after `--fix` removed its last function, since fixes cannot delete files. It fires regardless of the `generated` setting (which only gates dead functions *inside* generated files): if a deleted empty file was generated, the next `go generate` recreates it and the report returns — that's the cue to delete the `//go:generate` directive producing it instead. Package documentation files (doc comment on the package clause) and files holding `//go:generate` directives (which have no declarations by design) are exempt.
 
 ## Settings
 
@@ -73,11 +73,14 @@ linters:
           treat-functions-as-used: ""  # regex of function names treated as used, i.e. extra entry points (e.g. ^TestAcc)
           tags: ""             # extra build tags for the whole-program scan
           generated: false     # report dead functions declared in generated Go files
+          empty-files: false   # report files containing no declarations (dead code that --fix cannot delete)
 ```
 
 `patterns` defaults to `./...` relative to the directory golangci-lint runs from, which is right for a module linted from its root. The scan needs program entry points: if the patterns contain no `main` package (a pure library), the linter fails with an explanatory error — set `test: true` to use test executables as entry points instead, which treats anything reachable from the module's tests as live.
 
 `test`, `tags` and `generated` correspond to `cmd/deadcode`'s `-test`, `-tags` and `-generated` flags. Upstream's `-filter` is unnecessary here: reports are inherently limited to the packages golangci-lint is linting.
+
+`empty-files` (no upstream equivalent) reports files containing no declarations as dead code — see "Empty files are dead code" above. Recommended alongside `--fix`, which is what leaves such files behind.
 
 `treat-functions-as-used` treats functions whose name matches a regex as used — note this makes them *entry points*, not a suppression list: the matched functions and everything they transitively call become live (e.g. `^TestAcc` for terraform provider acceptance tests). Test packages are loaded, but unlike `test: true` the test harness itself is not a root: production code kept alive only by its own unit tests is still reported dead. In this mode functions declared in `_test.go` files are exempt from reporting — they are roots or harness scaffolding for `go test`, not dead code.
 
@@ -90,7 +93,7 @@ go install github.com/katbyte/deadcode-golangci@latest
 deadcode-golangci -fix ./...
 ```
 
-Its analyzer flags are `-patterns`, `-roots-test`, `-treat-functions-as-used`, `-buildtags` and `-generated` (`-test` and `-tags` are taken by the analysis driver itself, whose flags apply to the driver's own package load, not the whole-program scan).
+Its analyzer flags are `-patterns`, `-roots-test`, `-treat-functions-as-used`, `-buildtags`, `-generated` and `-empty-files` (`-test` and `-tags` are taken by the analysis driver itself, whose flags apply to the driver's own package load, not the whole-program scan).
 
 ## Caveats
 

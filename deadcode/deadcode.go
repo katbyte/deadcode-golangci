@@ -53,6 +53,11 @@ type Config struct {
 	TreatFunctionsAsUsed string
 	Tags                 string // comma-separated list of extra build tags (see: go help buildconstraint)
 	Generated            bool   // report dead functions declared in generated Go files
+	// EmptyFiles reports files containing no declarations — dead code that --fix
+	// cannot delete (fixes only edit text), such as the husk left behind once it
+	// removes a file's last function. Package documentation files and files holding
+	// //go:generate directives are never reported.
+	EmptyFiles bool
 }
 
 // NewAnalyzer returns a deadcode analyzer whose whole-program scan uses cfg.
@@ -82,6 +87,7 @@ var Analyzer = func() *analysis.Analyzer {
 	a.Flags.StringVar(&cfg.TreatFunctionsAsUsed, "treat-functions-as-used", "", "treat functions whose name matches this `regex` as used, i.e. as extra entry points (e.g. ^TestAcc); implies loading test packages, and functions declared in _test.go files are not reported")
 	a.Flags.StringVar(&cfg.Tags, "buildtags", "", "comma-separated list of extra build `tags` for the whole-program scan")
 	a.Flags.BoolVar(&cfg.Generated, "generated", false, "report dead functions declared in generated Go files")
+	a.Flags.BoolVar(&cfg.EmptyFiles, "empty-files", false, "report files containing no declarations (dead code that fixes cannot delete)")
 	return a
 }()
 
@@ -112,26 +118,21 @@ func (d *detector) run(pass *analysis.Pass) (any, error) {
 	}
 
 	for _, file := range pass.Files {
-		// a file whose declarations were all removed cannot be deleted by a suggested
-		// fix, so report the husk (comments + package clause) rather than leave it to
-		// linger silently. Package documentation files (a doc comment on the package
-		// clause) and side-effect imports are deliberate and stay quiet.
+		// a file with no declarations is itself dead code — whether it was checked in
+		// empty or is the husk left behind once --fix removed its last declaration
+		// (fixes cannot delete files) — so report it rather than leave it to linger
+		// silently. If the file is generated, deleting it just means the next
+		// 'go generate' recreates it and the report returns — the cue to delete the
+		// //go:generate directive producing it instead. Package documentation files
+		// (a doc comment on the package clause), side-effect imports, and files
+		// holding //go:generate directives (no declarations by design) are
+		// deliberate and stay quiet.
 		if len(file.Decls) == 0 && file.Doc == nil {
-			directives, generated := fileMarkers(pass.Fset.Position(file.Package).Filename)
-			switch {
-			case directives:
-				// holds //go:generate directives: no declarations by design
-			case generated:
+			if d.cfg.EmptyFiles && !hasGenerateDirectives(pass.Fset.Position(file.Package).Filename) {
 				pass.Report(analysis.Diagnostic{
 					Pos:     file.Name.Pos(),
 					End:     file.Name.End(),
-					Message: "generated file has no declarations left - remove it at the source, by deleting the //go:generate directive that produces it, or the next 'go generate' brings it back",
-				})
-			default:
-				pass.Report(analysis.Diagnostic{
-					Pos:     file.Name.Pos(),
-					End:     file.Name.End(),
-					Message: "file contains no declarations - remove it (deadcode fixes cannot delete files)",
+					Message: "empty file - dead code, remove it (deadcode fixes cannot delete files)",
 				})
 			}
 			continue
@@ -270,8 +271,10 @@ func (d *detector) scan() {
 				// package-level interface-satisfaction assertions (`var _ I = T{}`)
 				// compile-check that T implements I, but SSA elides blank assignments so
 				// RTA never sees the conversion; honour the declared intent by rooting
-				// T's method set, else --fix deletes methods the assertion references
-				// and the package no longer compiles
+				// the methods of T that I's method set requires, else --fix deletes
+				// methods the assertion references and the package no longer compiles.
+				// Only those methods: the assertion says nothing about the rest of T's
+				// method set (and an empty interface like any requires none)
 				if genDecl, ok := decl.(*ast.GenDecl); ok {
 					if genDecl.Tok != token.VAR {
 						continue
@@ -282,7 +285,11 @@ func (d *detector) scan() {
 							continue
 						}
 						ifaceType := p.TypesInfo.TypeOf(vs.Type)
-						if ifaceType == nil || !types.IsInterface(ifaceType) {
+						if ifaceType == nil {
+							continue
+						}
+						iface, ok := ifaceType.Underlying().(*types.Interface)
+						if !ok {
 							continue
 						}
 						for vi, name := range vs.Names {
@@ -293,8 +300,13 @@ func (d *detector) scan() {
 							if concrete == nil || types.IsInterface(concrete) {
 								continue
 							}
-							for method := range types.NewMethodSet(concrete).Methods() {
-								if f, ok := method.Obj().(*types.Func); ok {
+							mset := types.NewMethodSet(concrete)
+							for im := range iface.Methods() {
+								sel := mset.Lookup(im.Pkg(), im.Name())
+								if sel == nil {
+									continue
+								}
+								if f, ok := sel.Obj().(*types.Func); ok {
 									if mfn := prog.FuncValue(f); mfn != nil {
 										roots = append(roots, mfn)
 									}
@@ -397,33 +409,22 @@ func (d *detector) scan() {
 	}
 }
 
-// generatedComment matches the header marking a file as generated: the canonical
-// "Code generated ... DO NOT EDIT." form and the looser "generated by/via" phrasings
-// projects use instead.
-var generatedComment = regexp.MustCompile(`(?i)code generated .* do not edit|generated (by|via) `)
-
-// fileMarkers classifies a declaration-less file by its comments: whether it holds
-// //go:generate directives (such files, e.g. terraform-provider-azurerm's resourceids.go,
-// have no declarations by design) and whether it was itself generated (deleting it means
-// removing the directive that produces it too). Comments are read from the source rather
-// than the AST because golangci-lint hands analyzers comment-free files; this only runs
-// for files with no declarations, so the read is rare.
-func fileMarkers(filename string) (directives, generated bool) {
+// hasGenerateDirectives reports whether the file holds //go:generate directives:
+// such files (e.g. terraform-provider-azurerm's resourceids.go) have no declarations
+// by design and must not be reported. Directives are read from the source rather
+// than the AST because golangci-lint hands analyzers comment-free files; this only
+// runs for files with no declarations, so the read is rare.
+func hasGenerateDirectives(filename string) bool {
 	src, err := os.ReadFile(filename) //nolint:gosec // the path comes from the driver's FileSet, not user input
 	if err != nil {
-		return false, false
+		return false
 	}
 	for line := range strings.Lines(string(src)) {
-		if !strings.HasPrefix(line, "//") {
-			continue
-		}
 		if strings.HasPrefix(line, "//go:generate") {
-			directives = true
-		} else if generatedComment.MatchString(line) {
-			generated = true
+			return true
 		}
 	}
-	return directives, generated
+	return false
 }
 
 // prettyName reduces go/ssa's fussy punctuation as cmd/deadcode does,
